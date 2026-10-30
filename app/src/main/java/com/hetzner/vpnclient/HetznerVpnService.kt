@@ -2,115 +2,86 @@ package com.hetzner.vpnclient
 
 import android.content.Intent
 import android.net.VpnService
-import android.os.ParcelFileDescriptor
-import java.net.InetSocketAddress
-import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import com.wireguard.android.backend.GoBackend
+import com.wireguard.android.backend.Tunnel
+import com.wireguard.config.Config
+import com.wireguard.config.Interface
+import com.wireguard.config.InetAddresses
+import com.wireguard.config.InetNetwork
+import com.wireguard.config.Peer
+import com.wireguard.crypto.KeyPair
+import com.wireguard.crypto.Key
+import java.net.InetAddress
+import kotlin.concurrent.thread
 
 class HetznerVpnService : VpnService() {
 
-    private var vpnInterface: ParcelFileDescriptor? = null
-    private var isRunning = false
-    private var vpnThread: Thread? = null
+    private var backend: GoBackend? = null
+    private val tunnel = SimpleTunnel("HetznerTunnel")
+
+    override fun onCreate() {
+        super.onCreate()
+        backend = GoBackend(applicationContext)
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == "START") {
-            createTunnel()
-        } else if (intent?.action == "STOP") {
-            stopTunnel()
+        when (intent?.action) {
+            "START" -> startWireGuard()
+            "STOP" -> stopWireGuard()
         }
         return START_STICKY
     }
 
-    private fun createTunnel() {
-        try {
-            vpnInterface?.close()
-
-            // سرور کی کنفیگریشن کے مطابق 10.8.0.2 سیٹ کریں
-            val builder = Builder()
-                .addAddress("10.8.0.2", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("1.1.1.1")
-                .addDnsServer("8.8.8.8")
-                .setMtu(1280)
-                .setSession("HetznerVPN")
-
-            vpnInterface = builder.establish()
-
-            isRunning = true
-            startDataTransfer()
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun startDataTransfer() {
-        vpnThread = Thread {
-            var tunnelChannel: DatagramChannel? = null
+    private fun startWireGuard() {
+        thread {
             try {
-                tunnelChannel = DatagramChannel.open()
-                protect(tunnelChannel.socket()) // لوپ پروٹیکشن تاکہ وی پی این کا ڈیٹا خود اندر نہ پھنسے
-                tunnelChannel.connect(InetSocketAddress("2.31.89.14", 51820))
-                tunnelChannel.configureBlocking(false)
+                val clientPrivateKey = Key.fromBase64("4I79Sfrbw7npBnxC5wOT4bab6Gmsadac3sfDTC976Wg=")
+                val serverPublicKey = Key.fromBase64("E+2IfFhA7YA5pAjyIFxgKIirkT1SzQu2yMSmlipg5Fk=")
 
-                val vpnInput = FileInputStream(vpnInterface?.fileDescriptor).channel
-                val vpnOutput = FileOutputStream(vpnInterface?.fileDescriptor).channel
+                val iface = Interface.Builder()
+                    .setKeyPair(KeyPair(clientPrivateKey))
+                    .addAddress(InetNetwork.parse("10.8.0.2/32"))
+                    .addDnsServer(InetAddress.getByName("1.1.1.1"))
+                    .addDnsServer(InetAddress.getByName("8.8.8.8"))
+                    .build()
 
-                val packet = ByteBuffer.allocate(32767)
+                val peer = Peer.Builder()
+                    .setPublicKey(serverPublicKey)
+                    .setEndpoint(InetAddresses.parse("2.31.89.14:51820"))
+                    .addAllowedIp(InetNetwork.parse("0.0.0.0/0"))
+                    .setPersistentKeepalive(25)
+                    .build()
 
-                while (isRunning) {
-                    var hasActivity = false
+                val config = Config.Builder()
+                    .setInterface(iface)
+                    .addPeer(peer)
+                    .build()
 
-                    // فون سے ڈیٹا لے کر Hetzner سرور کی طرف بھیجنا
-                    packet.clear()
-                    val lengthFromDevice = vpnInput.read(packet)
-                    if (lengthFromDevice > 0) {
-                        packet.flip()
-                        tunnelChannel.write(packet)
-                        hasActivity = true
-                    }
-
-                    // سرور سے آنے والا ڈیٹا فون کی طرف بھیجنا
-                    packet.clear()
-                    val lengthFromServer = tunnelChannel.read(packet)
-                    if (lengthFromServer > 0) {
-                        packet.flip()
-                        vpnOutput.write(packet)
-                        hasActivity = true
-                    }
-
-                    if (!hasActivity) {
-                        Thread.sleep(10)
-                    }
-                }
+                backend?.setState(tunnel, Tunnel.State.UP, config)
             } catch (e: Exception) {
                 e.printStackTrace()
-            } finally {
-                try {
-                    tunnelChannel?.close()
-                } catch (ignored: Exception) {}
             }
         }
-        vpnThread?.start()
     }
 
-    private fun stopTunnel() {
-        try {
-            isRunning = false
-            vpnThread?.interrupt()
-            vpnInterface?.close()
-            vpnInterface = null
-            stopSelf()
-        } catch (e: Exception) {
-            e.printStackTrace()
+    private fun stopWireGuard() {
+        thread {
+            try {
+                backend?.setState(tunnel, Tunnel.State.DOWN, null)
+                stopSelf()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopTunnel()
+        stopWireGuard()
+    }
+
+    class SimpleTunnel(private val tunnelName: String) : Tunnel {
+        override fun getName(): String = tunnelName
+        override fun onStateChange(newState: Tunnel.State) {}
     }
 }
