@@ -28,19 +28,21 @@ class MainActivity : AppCompatActivity() {
         btnConnect = findViewById(R.id.btnConnect)
         tvStatus = findViewById(R.id.tvStatus)
 
+        // صارف کا اپنا سیو شدہ ڈیٹا لوڈ ہوگا، پہلی بار کھولنے پر بالکل خالی رہے گا
         val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
-        etUser.setText(prefs.getString("user", "vpnuser"))
-        etPass.setText(prefs.getString("pass", "DATWADUoFh5w7uHr"))
+        etUser.setText(prefs.getString("user", ""))
+        etPass.setText(prefs.getString("pass", ""))
 
         btnConnect.setOnClickListener {
             val user = etUser.text.toString().trim()
             val pass = etPass.text.toString().trim()
 
             if (user.isEmpty() || pass.isEmpty()) {
-                Toast.makeText(this, "Username aur Password enter karein", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "براہ کرم یوزر نیم اور پاس ورڈ درج کریں", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
+            // صارف کی دی گئی تفصیلات محفوظ کریں
             prefs.edit().putString("user", user).putString("pass", pass).apply()
 
             val vpnIntent = VpnService.prepare(this)
